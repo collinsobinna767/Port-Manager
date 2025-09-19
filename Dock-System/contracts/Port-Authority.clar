@@ -18,12 +18,24 @@
 (define-constant ERR-BOOKING-NOT-FOUND (err u113))
 (define-constant ERR-BOOKING-ALREADY-EXISTS (err u114))
 (define-constant ERR-INVALID-BOOKING-STATUS (err u115))
+(define-constant ERR-INVALID-INPUT (err u116))
+(define-constant ERR-INVALID-DIMENSIONS (err u117))
+(define-constant ERR-INVALID-FEE (err u118))
+(define-constant ERR-INVALID-WEIGHT (err u119))
+(define-constant ERR-INVALID-VOLUME (err u120))
+(define-constant ERR-AUTHORITY-ALREADY-EXISTS (err u121))
+(define-constant ERR-AUTHORITY-NOT-FOUND (err u122))
 
 ;; Contract constants
 (define-constant CONTRACT-OWNER tx-sender)
 (define-constant MAX-BERTH-CAPACITY u10000)
 (define-constant MIN-BOOKING-DURATION u1)
 (define-constant MAX-BOOKING-DURATION u168) ;; 7 days in hours
+(define-constant MAX-DOCK-FEE u1000000) ;; Maximum fee per hour
+(define-constant MAX-DIMENSIONS u50000) ;; Maximum dimension in meters
+(define-constant MAX-WEIGHT u1000000000) ;; Maximum weight in kg
+(define-constant MAX-VOLUME u10000000) ;; Maximum volume in cubic meters
+(define-constant MAX-INSURANCE-VALUE u1000000000000) ;; Maximum insurance value
 
 ;; Status constants for various entities
 (define-constant BERTH-STATUS-AVAILABLE u1)
@@ -221,6 +233,63 @@
          (> end-time start-time)))
 )
 
+;; Validate string is not empty
+(define-private (is-valid-string (str (string-ascii 500)))
+  (> (len str) u0)
+)
+
+;; Validate dimensions are within reasonable limits
+(define-private (is-valid-dimension (value uint))
+  (and (> value u0) (<= value MAX-DIMENSIONS))
+)
+
+;; Validate capacity is within limits
+(define-private (is-valid-capacity (capacity uint))
+  (and (> capacity u0) (<= capacity MAX-BERTH-CAPACITY))
+)
+
+;; Validate dock fee is within limits
+(define-private (is-valid-dock-fee (fee uint))
+  (<= fee MAX-DOCK-FEE)
+)
+
+;; Validate weight is within limits
+(define-private (is-valid-weight (weight uint))
+  (and (> weight u0) (<= weight MAX-WEIGHT))
+)
+
+;; Validate volume is within limits
+(define-private (is-valid-volume (volume uint))
+  (and (> volume u0) (<= volume MAX-VOLUME))
+)
+
+;; Validate insurance value is within limits
+(define-private (is-valid-insurance-value (value uint))
+  (<= value MAX-INSURANCE-VALUE)
+)
+
+;; Validate ID is non-zero
+(define-private (is-valid-id (id uint))
+  (> id u0)
+)
+
+;; Validate permissions value
+(define-private (is-valid-permissions (permissions uint))
+  (> permissions u0)
+)
+
+;; Validate principal is not the contract itself (prevent self-reference issues)
+(define-private (is-valid-principal (addr principal))
+  (not (is-eq addr (as-contract tx-sender)))
+)
+
+;; Validate authority principal - ensures it's not the contract owner or contract itself
+(define-private (is-valid-authority-principal (authority principal))
+  (and (not (is-eq authority CONTRACT-OWNER))
+       (not (is-eq authority (as-contract tx-sender)))
+       (is-valid-principal authority))
+)
+
 ;; Utility functions for common operations
 ;; Get current block time for timestamps
 (define-private (get-current-time)
@@ -250,8 +319,16 @@
 (define-public (create-berth (name (string-ascii 50)) (capacity uint) (dock-fee-per-hour uint) 
                            (berth-type (string-ascii 20)) (depth uint) (length uint) (width uint))
   (let ((berth-id (var-get next-berth-id)))
+    ;; Authorization check
     (asserts! (is-admin) ERR-UNAUTHORIZED-ACCESS)
-    (asserts! (<= capacity MAX-BERTH-CAPACITY) ERR-INSUFFICIENT-BERTH-CAPACITY)
+    ;; Input validation
+    (asserts! (is-valid-string name) ERR-INVALID-INPUT)
+    (asserts! (is-valid-capacity capacity) ERR-INSUFFICIENT-BERTH-CAPACITY)
+    (asserts! (is-valid-dock-fee dock-fee-per-hour) ERR-INVALID-FEE)
+    (asserts! (is-valid-string berth-type) ERR-INVALID-INPUT)
+    (asserts! (is-valid-dimension depth) ERR-INVALID-DIMENSIONS)
+    (asserts! (is-valid-dimension length) ERR-INVALID-DIMENSIONS)
+    (asserts! (is-valid-dimension width) ERR-INVALID-DIMENSIONS)
     (asserts! (is-none (map-get? berths { berth-id: berth-id })) ERR-BERTH-ALREADY-EXISTS)
     
     (map-set berths
@@ -281,7 +358,10 @@
 ;; Update berth status with proper validation
 (define-public (update-berth-status (berth-id uint) (new-status uint))
   (let ((berth-data (unwrap! (map-get? berths { berth-id: berth-id }) ERR-BERTH-NOT-FOUND)))
+    ;; Authorization check
     (asserts! (is-admin) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation
+    (asserts! (is-valid-id berth-id) ERR-INVALID-INPUT)
     (asserts! (is-valid-berth-status new-status) ERR-INVALID-CARGO-STATUS)
     
     (map-set berths
@@ -298,7 +378,12 @@
   (let ((berth-data (unwrap! (map-get? berths { berth-id: berth-id }) ERR-BERTH-NOT-FOUND))
         (vessel-data (unwrap! (map-get? vessels { vessel-id: vessel-id }) ERR-VESSEL-NOT-FOUND)))
     
+    ;; Authorization check
     (asserts! (is-admin) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation
+    (asserts! (is-valid-id berth-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-id vessel-id) ERR-INVALID-INPUT)
+    ;; Business logic validation
     (asserts! (is-eq (get status berth-data) BERTH-STATUS-AVAILABLE) ERR-BERTH-ALREADY-OCCUPIED)
     (asserts! (is-none (get current-berth vessel-data)) ERR-BERTH-ALREADY-OCCUPIED)
     
@@ -332,7 +417,11 @@
   (let ((berth-data (unwrap! (map-get? berths { berth-id: berth-id }) ERR-BERTH-NOT-FOUND))
         (vessel-id (unwrap! (get vessel-id berth-data) ERR-BERTH-NOT-OCCUPIED)))
     
+    ;; Authorization check
     (asserts! (is-admin) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation
+    (asserts! (is-valid-id berth-id) ERR-INVALID-INPUT)
+    ;; Business logic validation
     (asserts! (is-eq (get status berth-data) BERTH-STATUS-OCCUPIED) ERR-BERTH-NOT-OCCUPIED)
     
     (let ((vessel-data (unwrap! (map-get? vessels { vessel-id: vessel-id }) ERR-VESSEL-NOT-FOUND)))
@@ -366,6 +455,14 @@
 (define-public (register-vessel (name (string-ascii 100)) (imo-number (string-ascii 20)) (vessel-type (string-ascii 30))
                                (length uint) (beam uint) (draft uint) (gross-tonnage uint))
   (let ((vessel-id (var-get next-vessel-id)))
+    ;; Input validation
+    (asserts! (is-valid-string name) ERR-INVALID-INPUT)
+    (asserts! (is-valid-string imo-number) ERR-INVALID-INPUT)
+    (asserts! (is-valid-string vessel-type) ERR-INVALID-INPUT)
+    (asserts! (is-valid-dimension length) ERR-INVALID-DIMENSIONS)
+    (asserts! (is-valid-dimension beam) ERR-INVALID-DIMENSIONS)
+    (asserts! (is-valid-dimension draft) ERR-INVALID-DIMENSIONS)
+    (asserts! (> gross-tonnage u0) ERR-INVALID-INPUT)
     (asserts! (is-none (map-get? vessels { vessel-id: vessel-id })) ERR-VESSEL-ALREADY-EXISTS)
     
     (map-set vessels
@@ -398,7 +495,10 @@
 ;; Update vessel status with validation
 (define-public (update-vessel-status (vessel-id uint) (new-status uint))
   (let ((vessel-data (unwrap! (map-get? vessels { vessel-id: vessel-id }) ERR-VESSEL-NOT-FOUND)))
+    ;; Authorization check
     (asserts! (or (is-eq tx-sender (get owner vessel-data)) (is-admin)) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation
+    (asserts! (is-valid-id vessel-id) ERR-INVALID-INPUT)
     (asserts! (is-valid-vessel-status new-status) ERR-INVALID-CARGO-STATUS)
     
     (map-set vessels
@@ -416,6 +516,15 @@
                            (consignee principal) (vessel-id uint) (insurance-value uint) 
                            (handling-instructions (string-ascii 300)))
   (let ((cargo-id (var-get next-cargo-id)))
+    ;; Input validation
+    (asserts! (is-valid-string description) ERR-INVALID-INPUT)
+    (asserts! (is-valid-weight weight) ERR-INVALID-WEIGHT)
+    (asserts! (is-valid-volume volume) ERR-INVALID-VOLUME)
+    (asserts! (is-valid-string cargo-type) ERR-INVALID-INPUT)
+    (asserts! (is-valid-principal consignee) ERR-INVALID-INPUT)
+    (asserts! (is-valid-id vessel-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-insurance-value insurance-value) ERR-INVALID-INPUT)
+    (asserts! (is-valid-string handling-instructions) ERR-INVALID-INPUT)
     (asserts! (is-some (map-get? vessels { vessel-id: vessel-id })) ERR-VESSEL-NOT-FOUND)
     (asserts! (is-none (map-get? cargo { cargo-id: cargo-id })) ERR-CARGO-ALREADY-EXISTS)
     
@@ -449,9 +558,12 @@
 ;; Update cargo status with proper authorization
 (define-public (update-cargo-status (cargo-id uint) (new-status uint))
   (let ((cargo-data (unwrap! (map-get? cargo { cargo-id: cargo-id }) ERR-CARGO-NOT-FOUND)))
+    ;; Authorization check
     (asserts! (or (is-eq tx-sender (get shipper cargo-data)) 
                   (is-eq tx-sender (get consignee cargo-data)) 
                   (is-admin)) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation
+    (asserts! (is-valid-id cargo-id) ERR-INVALID-INPUT)
     (asserts! (is-valid-cargo-status new-status) ERR-INVALID-CARGO-STATUS)
     
     (map-set cargo
@@ -466,7 +578,10 @@
 ;; Clear cargo through customs
 (define-public (clear-cargo-customs (cargo-id uint))
   (let ((cargo-data (unwrap! (map-get? cargo { cargo-id: cargo-id }) ERR-CARGO-NOT-FOUND)))
+    ;; Authorization check
     (asserts! (is-admin) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation
+    (asserts! (is-valid-id cargo-id) ERR-INVALID-INPUT)
     
     (map-set cargo
       { cargo-id: cargo-id }
@@ -485,7 +600,12 @@
         (berth-data (unwrap! (map-get? berths { berth-id: berth-id }) ERR-BERTH-NOT-FOUND))
         (vessel-data (unwrap! (map-get? vessels { vessel-id: vessel-id }) ERR-VESSEL-NOT-FOUND)))
     
+    ;; Input validation
+    (asserts! (is-valid-id berth-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-id vessel-id) ERR-INVALID-INPUT)
     (asserts! (is-valid-booking-duration start-time end-time) ERR-INVALID-TIME-SLOT)
+    (asserts! (> start-time (get-current-time)) ERR-INVALID-TIME-SLOT)
+    (asserts! (is-valid-string special-requirements) ERR-INVALID-INPUT)
     (asserts! (is-none (map-get? berth-bookings { booking-id: booking-id })) ERR-BOOKING-ALREADY-EXISTS)
     
     (let ((duration (- end-time start-time))
@@ -516,7 +636,10 @@
 ;; Update booking status
 (define-public (update-booking-status (booking-id uint) (new-status uint))
   (let ((booking-data (unwrap! (map-get? berth-bookings { booking-id: booking-id }) ERR-BOOKING-NOT-FOUND)))
+    ;; Authorization check
     (asserts! (or (is-eq tx-sender (get booker booking-data)) (is-admin)) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation
+    (asserts! (is-valid-id booking-id) ERR-INVALID-INPUT)
     (asserts! (is-valid-booking-status new-status) ERR-INVALID-BOOKING-STATUS)
     
     (map-set berth-bookings
@@ -532,7 +655,14 @@
 ;; Add port authority with role-based permissions
 (define-public (add-port-authority (authority principal) (role (string-ascii 50)) (permissions uint))
   (begin
+    ;; Authorization check
     (asserts! (is-contract-owner) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation - validate the authority principal first
+    (asserts! (is-valid-authority-principal authority) ERR-INVALID-INPUT)
+    (asserts! (is-valid-string role) ERR-INVALID-INPUT)
+    (asserts! (is-valid-permissions permissions) ERR-INVALID-INPUT)
+    ;; Check if authority already exists
+    (asserts! (is-none (map-get? port-authorities { authority: authority })) ERR-AUTHORITY-ALREADY-EXISTS)
     
     (map-set port-authorities
       { authority: authority }
@@ -551,11 +681,33 @@
 ;; Remove port authority
 (define-public (remove-port-authority (authority principal))
   (begin
+    ;; Authorization check
     (asserts! (is-contract-owner) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation - validate the authority principal first
+    (asserts! (is-valid-authority-principal authority) ERR-INVALID-INPUT)
+    ;; Check if authority exists before removal
+    (asserts! (is-some (map-get? port-authorities { authority: authority })) ERR-AUTHORITY-NOT-FOUND)
     
     (map-delete port-authorities { authority: authority })
     
     (unwrap-panic (log-operation "REMOVE_AUTHORITY" u0 "AUTHORITY" "Port authority removed"))
+    (ok true))
+)
+
+;; Update port authority status
+(define-public (update-authority-status (authority principal) (active bool))
+  (let ((authority-data (unwrap! (map-get? port-authorities { authority: authority }) ERR-AUTHORITY-NOT-FOUND)))
+    ;; Authorization check
+    (asserts! (is-contract-owner) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation
+    (asserts! (is-valid-authority-principal authority) ERR-INVALID-INPUT)
+    
+    (map-set port-authorities
+      { authority: authority }
+      (merge authority-data { active: active })
+    )
+    
+    (unwrap-panic (log-operation "UPDATE_AUTHORITY_STATUS" u0 "AUTHORITY" "Port authority status updated"))
     (ok true))
 )
 
@@ -578,6 +730,11 @@
 ;; Get booking information
 (define-read-only (get-booking (booking-id uint))
   (map-get? berth-bookings { booking-id: booking-id })
+)
+
+;; Get port authority information
+(define-read-only (get-port-authority (authority principal))
+  (map-get? port-authorities { authority: authority })
 )
 
 ;; Get operation log
@@ -607,9 +764,58 @@
   )
 )
 
-;; Get all cargo for a vessel
+;; Get all cargo for a vessel (simplified count function)
 (define-read-only (get-vessel-cargo-count (vessel-id uint))
   (var-get total-cargo)
+)
+
+;; Check if principal is authorized
+(define-read-only (is-authorized (principal-addr principal))
+  (or (is-eq principal-addr CONTRACT-OWNER)
+      (match (map-get? port-authorities { authority: principal-addr })
+        authority (get active authority)
+        false))
+)
+
+;; Get berth occupancy status
+(define-read-only (get-berth-occupancy-status (berth-id uint))
+  (match (map-get? berths { berth-id: berth-id })
+    berth-data {
+      berth-id: berth-id,
+      status: (get status berth-data),
+      vessel-id: (get vessel-id berth-data),
+      occupied: (is-eq (get status berth-data) BERTH-STATUS-OCCUPIED)
+    }
+    { berth-id: berth-id, status: u0, vessel-id: none, occupied: false }
+  )
+)
+
+;; Get vessel current location
+(define-read-only (get-vessel-location (vessel-id uint))
+  (match (map-get? vessels { vessel-id: vessel-id })
+    vessel-data {
+      vessel-id: vessel-id,
+      status: (get status vessel-data),
+      current-berth: (get current-berth vessel-data),
+      is-docked: (is-eq (get status vessel-data) VESSEL-STATUS-DOCKED)
+    }
+    { vessel-id: vessel-id, status: u0, current-berth: none, is-docked: false }
+  )
+)
+
+;; Get cargo summary for a vessel
+(define-read-only (get-cargo-summary (cargo-id uint))
+  (match (map-get? cargo { cargo-id: cargo-id })
+    cargo-data {
+      cargo-id: cargo-id,
+      vessel-id: (get vessel-id cargo-data),
+      status: (get status cargo-data),
+      customs-cleared: (get customs-cleared cargo-data),
+      weight: (get weight cargo-data),
+      volume: (get volume cargo-data)
+    }
+    { cargo-id: cargo-id, vessel-id: u0, status: u0, customs-cleared: false, weight: u0, volume: u0 }
+  )
 )
 
 ;; Emergency functions for contract management
@@ -619,5 +825,45 @@
     (asserts! (is-contract-owner) ERR-UNAUTHORIZED-ACCESS)
     (var-set port-operational operational)
     (unwrap-panic (log-operation "SET_OPERATIONAL" u0 "PORT" "Port operational status changed"))
+    (ok true))
+)
+
+;; Emergency berth release (for emergency situations)
+(define-public (emergency-release-berth (berth-id uint))
+  (let ((berth-data (unwrap! (map-get? berths { berth-id: berth-id }) ERR-BERTH-NOT-FOUND)))
+    ;; Authorization check - only contract owner can perform emergency operations
+    (asserts! (is-contract-owner) ERR-UNAUTHORIZED-ACCESS)
+    ;; Input validation
+    (asserts! (is-valid-id berth-id) ERR-INVALID-INPUT)
+    
+    ;; Force release the berth regardless of current status
+    (map-set berths
+      { berth-id: berth-id }
+      (merge berth-data {
+        status: BERTH-STATUS-AVAILABLE,
+        vessel-id: none,
+        last-updated: (get-current-time)
+      })
+    )
+    
+    (unwrap-panic (log-operation "EMERGENCY_RELEASE" berth-id "BERTH" "Emergency berth release"))
+    (ok true))
+)
+
+;; Pause all port operations
+(define-public (pause-port-operations)
+  (begin
+    (asserts! (is-contract-owner) ERR-UNAUTHORIZED-ACCESS)
+    (var-set port-operational false)
+    (unwrap-panic (log-operation "PAUSE_OPERATIONS" u0 "PORT" "Port operations paused"))
+    (ok true))
+)
+
+;; Resume all port operations
+(define-public (resume-port-operations)
+  (begin
+    (asserts! (is-contract-owner) ERR-UNAUTHORIZED-ACCESS)
+    (var-set port-operational true)
+    (unwrap-panic (log-operation "RESUME_OPERATIONS" u0 "PORT" "Port operations resumed"))
     (ok true))
 )
